@@ -2,12 +2,15 @@
 This module implements interpolation class and its methods
 Dung Tran: Nov/2017
 '''
+#add changes
 
 import numpy as np
-from engine.functions import Functions
+from engine.functions import Functions,lambdify
 from scipy.optimize import minimize
 from engine.set import RectangleSet2D, RectangleSet3D
-
+from engine.set import DReachSet
+from sympy import Function
+from sympy.abc import alpha, beta
 
 class InterpolSetInSpace(object):
     'represent the set after doing interpolation in space'
@@ -142,10 +145,12 @@ class InterpolationSet(object):
         self.delta_d_vec = None
         self.delta_gamma_c_vec = None
         self.delta_gamma_d_vec = None
+	self.d_reach_prev = None 
+	self.d_reach_curr = None
 
     def set_values(self, step, cur_time_step, xlist, delta_a_vec, delta_b_vec,
                    delta_gamma_a_vec, delta_gamma_b_vec,
-                   delta_c_vec, delta_d_vec, delta_gamma_c_vec, delta_gamma_d_vec):
+                   delta_c_vec, delta_d_vec, delta_gamma_c_vec, delta_gamma_d_vec, d_reach_prev, d_reach_curr):
         'set values for the set'
 
         assert isinstance(step, float)
@@ -160,6 +165,9 @@ class InterpolationSet(object):
         assert isinstance(delta_gamma_b_vec, np.ndarray)
         assert isinstance(delta_gamma_c_vec, np.ndarray)
         assert isinstance(delta_gamma_d_vec, np.ndarray)
+	assert isinstance(d_reach_prev, DReachSet)
+        assert isinstance(d_reach_curr, DReachSet)
+
 
         assert delta_a_vec.shape == delta_b_vec.shape == \
             delta_gamma_a_vec.shape == delta_gamma_b_vec.shape == delta_gamma_c_vec.shape == \
@@ -183,6 +191,8 @@ class InterpolationSet(object):
         self.delta_d_vec = delta_d_vec
         self.delta_gamma_c_vec = delta_gamma_c_vec
         self.delta_gamma_d_vec = delta_gamma_d_vec
+	self.d_reach_prev = d_reach_prev
+	self.d_reach_curr = d_reach_curr
 
     def get_3D_boxes(self, alpha_range, beta_range):
         'find minimum and maximum values of interpolation set U(x, t) and 3D boxes contain all U(x,t)'
@@ -193,7 +203,8 @@ class InterpolationSet(object):
         assert isinstance(beta_range, tuple) and len(
             beta_range) == 2 and beta_range[0] <= beta_range[1], 'invalid beta_range'
 
-        m = self.delta_a_vec.shape[0]
+        m = self.delta_a_vec.shape[0]		#number of mesh points
+
         min_vec = np.zeros((m,), dtype=float)
         max_vec = np.zeros((m,), dtype=float)
         min_points = []
@@ -208,7 +219,7 @@ class InterpolationSet(object):
                 self.delta_gamma_a_vec[j],
                 self.delta_gamma_b_vec[j],
                 self.delta_c_vec[j],
-                self.delta_d_vec[j],
+                self.delta_d_vec[j], 
                 self.delta_gamma_c_vec[j],
                 self.delta_gamma_d_vec[j])
             max_func = Functions.intpl_in_time_and_space_func(self.step, -
@@ -265,6 +276,30 @@ class InterpolationSet(object):
             ymin = (self.cur_time_step - 1) * self.step
             ymax = (self.cur_time_step) * self.step
 
+	    if j == 0:	
+		temp1, temp2 = 0, 0
+		temp3, temp4 = self.get_min_max(alpha_range, beta_range, self.d_reach_prev.Vn[j].todense(), self.d_reach_prev.ln[j].todense())
+		temp5, temp6 = 0, 0
+		temp7, temp8 = self.get_min_max(alpha_range, beta_range, self.d_reach_curr.Vn[j].todense(), self.d_reach_curr.ln[j].todense())
+	    elif 0 < j < m - 1:
+		temp1, temp2 = self.get_min_max(alpha_range, beta_range, self.d_reach_prev.Vn[j - 1].todense(), self.d_reach_prev.ln[j - 1].todense())
+		temp3, temp4 = self.get_min_max(alpha_range, beta_range, self.d_reach_prev.Vn[j].todense(), self.d_reach_prev.ln[j].todense())
+		temp5, temp6 = self.get_min_max(alpha_range, beta_range, self.d_reach_curr.Vn[j - 1].todense(), self.d_reach_curr.ln[j - 1].todense())
+		temp7, temp8 = self.get_min_max(alpha_range, beta_range, self.d_reach_curr.Vn[j].todense(), self.d_reach_curr.ln[j].todense())
+	    elif j == m - 1:
+		temp1, temp2 = self.get_min_max(alpha_range, beta_range, self.d_reach_prev.Vn[j - 1].todense(), self.d_reach_prev.ln[j - 1].todense())
+		temp3, temp4 = 0, 0
+		temp5, temp6 = self.get_min_max(alpha_range, beta_range, self.d_reach_curr.Vn[j - 1].todense(), self.d_reach_curr.ln[j - 1].todense())
+		temp7, temp8 = 0, 0
+
+
+	    temp = [temp1, temp2, temp3, temp4, temp5, temp6, temp7, temp8]
+	    temp.sort()
+	    min_vec[j] = temp[0]
+	    print "\n min is {}".format(min_vec[j])
+	    max_vec[j] = temp[7]
+	    print "\n max is {}".format(max_vec[j])
+
             box_3D = RectangleSet3D()
             box_3D.set_bounds(self.xlist[j],
                               self.xlist[j + 1],
@@ -275,6 +310,60 @@ class InterpolationSet(object):
             boxes_3D_list.append(box_3D)
 
         return boxes_3D_list
+
+    def get_min_max(self, alpha_range, beta_range, v, l):
+
+	    x0 = [
+                alpha_range[0],
+                beta_range[0]]
+            bnds = (alpha_range, beta_range)
+	    fun_min = Function('fun_min')
+            fun_min = alpha * v + beta * l
+            fun_min_eval = lambdify((alpha, beta), fun_min)
+	    fun_max = Function('fun_max')
+            fun_max = - alpha * v - beta * l
+            func_max_eval = lambdify((alpha, beta), fun_max)
+
+            def my_func_1(y):
+        	'convert to python numpy multivariable function'
+        	return fun_min_eval(*tuple(y))
+            def my_func_2(y):
+        	'convert to python numpy multivariable function'
+        	return func_max_eval(*tuple(y))
+	    
+            min_res = minimize(
+                my_func_1,
+                x0,
+                method='L-BFGS-B',
+                bounds=bnds,
+                tol=1e-10, options={'disp': False})    # add options={'disp': True} to display optimization result	
+
+            max_res = minimize(
+                my_func_2,
+                x0,
+                method='L-BFGS-B',
+                bounds=bnds,
+                tol=1e-10, options={'disp': False})    # add  options={'disp': True} to display optimization result
+
+            if min_res.status == 0:
+                min_value = min_res.fun
+            else:
+                print "\nmin_res.status = {}".format(min_res.status)
+                print "\nminimization message: {}".format(min_res.message)
+                raise ValueError(
+                    'minimization for interpolation function fail!')
+
+            if max_res.status == 0:
+                max_value = -max_res.fun
+            else:
+                print "\nmax_res.status = {}".format(max_res.status)
+                print "\nmaximization message: {}".format(max_res.message)
+                raise ValueError(
+                    'maximization for interpolation function fail!')
+
+	    return min_value, max_value
+
+
 
     def get_trace_func(self, alpha_value, beta_value, x_value):
         'return a trace function for specific values of alpha and beta'
@@ -309,7 +398,7 @@ class Interpolation(object):
 
     @staticmethod
     def interpolate_in_space(xlist, vector_Vn, vector_ln):
-        'interpolation of u(x) in space at time t = tn'
+        'interpolation of u(x) in space at time t = tn, 0 boundary condition for both sides'
 
         # at t = n*time_step, using FEM, we have U_n,i = alpha * vector_Vn,i + beta * vector_ln,i
         # i = 1, 2, ... m is discreted meshpoints
@@ -331,10 +420,10 @@ class Interpolation(object):
         assert isinstance(vector_Vn, np.ndarray)
         assert isinstance(vector_ln, np.ndarray)
         assert len(
-            xlist) - 2 == vector_Vn.shape[0] == vector_ln.shape[0], 'inconsistent data'
+            xlist) - 2 == vector_Vn.shape[0]/2 == vector_ln.shape[0]/2, 'inconsistent data'
         assert vector_Vn.shape[1] == vector_ln.shape[1] == 1, 'invalid vectors'
 
-        n = len(xlist) - 1
+        n = len(xlist) - 1	#n is half size of vector_Vn
         Vn = vector_Vn
         ln = vector_ln
         a_n_vector = np.zeros((n,), dtype=float)
@@ -375,11 +464,13 @@ class Interpolation(object):
 
     @staticmethod
     def increm_interpolation(
-            step, cur_time_step, prev_intpl_inspace_set, cur_intpl_inspace_set):
+            step, cur_time_step, prev_intpl_inspace_set, cur_intpl_inspace_set, d_reach_prev, d_reach_curr):
         'incrementally doing interpolation'
 
         assert isinstance(prev_intpl_inspace_set, InterpolSetInSpace)
         assert isinstance(cur_intpl_inspace_set, InterpolSetInSpace)
+	assert isinstance(d_reach_prev, DReachSet)
+        assert isinstance(d_reach_curr, DReachSet)
         assert cur_intpl_inspace_set.xlist == prev_intpl_inspace_set.xlist, 'inconsistent data'
 
         assert isinstance(
@@ -414,6 +505,8 @@ class Interpolation(object):
             delta_c_vec,
             delta_d_vec,
             delta_gamma_c_vec,
-            delta_gamma_d_vec)
+            delta_gamma_d_vec,
+	    d_reach_prev, 
+	    d_reach_curr)
 
         return intpl_set
